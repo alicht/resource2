@@ -10,10 +10,18 @@ import matplotlib.pyplot as plt
 import openai
 from azure.identity import DefaultAzureCredential
 from azure.mgmt.monitor import MonitorManagementClient
+import boto3
+from botocore.exceptions import NoCredentialsError, PartialCredentialsError
+from google.cloud import monitoring_v3
 
 # Load environment variables
 load_dotenv()
 openai.api_key = os.getenv("OPENAI_API_KEY")
+
+# AWS Credentials Setup
+AWS_REGION = os.getenv("AWS_REGION")
+AWS_ACCESS_KEY_ID = os.getenv("AWS_ACCESS_KEY_ID")
+AWS_SECRET_ACCESS_KEY = os.getenv("AWS_SECRET_ACCESS_KEY")
 
 # Azure credentials setup
 credential = DefaultAzureCredential()
@@ -29,45 +37,65 @@ if not os.path.exists(llm_log_file):
         writer = csv.writer(file)
         writer.writerow(["Timestamp", "Total Tokens", "Prompt Tokens", "Cost"])
 
-# Function to track OpenAI usage
-def track_openai_usage(prompt, model="gpt-3.5-turbo"):
+# Function to fetch AWS metrics
+def fetch_aws_metrics():
     try:
-        response = openai.ChatCompletion.create(
-            model=model,
-            messages=[
-                {"role": "system", "content": "You are a helpful assistant."},
-                {"role": "user", "content": prompt}
-            ]
+        ec2_client = boto3.client(
+            "ec2",
+            region_name=AWS_REGION,
+            aws_access_key_id=AWS_ACCESS_KEY_ID,
+            aws_secret_access_key=AWS_SECRET_ACCESS_KEY
+        )
+        cloudwatch_client = boto3.client(
+            "cloudwatch",
+            region_name=AWS_REGION,
+            aws_access_key_id=AWS_ACCESS_KEY_ID,
+            aws_secret_access_key=AWS_SECRET_ACCESS_KEY
         )
 
-        total_tokens = response["usage"]["total_tokens"]
-        prompt_tokens = response["usage"]["prompt_tokens"]
-        completion_tokens = response["usage"]["completion_tokens"]
-        cost = calculate_cost(total_tokens, model)
+        # Get list of instances
+        instances = ec2_client.describe_instances()
+        instance_metrics = []
 
-        # Log usage
-        with open(llm_log_file, mode="a", newline="") as file:
-            writer = csv.writer(file)
-            writer.writerow([
-                time.strftime("%Y-%m-%d %H:%M:%S"),
-                total_tokens, prompt_tokens, cost
-            ])
+        for reservation in instances["Reservations"]:
+            for instance in reservation["Instances"]:
+                instance_id = instance["InstanceId"]
 
-        return {
-            "response": response["choices"][0]["message"]["content"],
-            "total_tokens": total_tokens,
-            "prompt_tokens": prompt_tokens,
-            "completion_tokens": completion_tokens,
-            "cost": cost
-        }
+                # Fetch CPU Utilization
+                cpu_data = cloudwatch_client.get_metric_statistics(
+                    Namespace="AWS/EC2",
+                    MetricName="CPUUtilization",
+                    Dimensions=[{"Name": "InstanceId", "Value": instance_id}],
+                    StartTime=time.time() - 3600,
+                    EndTime=time.time(),
+                    Period=300,
+                    Statistics=["Average"],
+                )
+
+                # Fetch Network In
+                network_in_data = cloudwatch_client.get_metric_statistics(
+                    Namespace="AWS/EC2",
+                    MetricName="NetworkIn",
+                    Dimensions=[{"Name": "InstanceId", "Value": instance_id}],
+                    StartTime=time.time() - 3600,
+                    EndTime=time.time(),
+                    Period=300,
+                    Statistics=["Average"],
+                )
+
+                instance_metrics.append({
+                    "Instance ID": instance_id,
+                    "CPU Utilization (%)": cpu_data["Datapoints"][0]["Average"] if cpu_data["Datapoints"] else "N/A",
+                    "Network In (Bytes)": network_in_data["Datapoints"][0]["Average"] if network_in_data["Datapoints"] else "N/A"
+                })
+
+        return instance_metrics
+    except NoCredentialsError:
+        return {"error": "AWS credentials not found. Please check your environment variables or AWS configuration."}
+    except PartialCredentialsError:
+        return {"error": "Incomplete AWS credentials. Please verify your AWS access key and secret key."}
     except Exception as e:
         return {"error": str(e)}
-
-# Function to calculate cost
-def calculate_cost(total_tokens, model):
-    pricing = {"gpt-3.5-turbo": 0.002, "gpt-4": 0.03}  # Per 1k tokens
-    cost_per_token = pricing.get(model, 0.001)
-    return (total_tokens / 1000) * cost_per_token
 
 # Function to fetch Azure resource metrics
 def fetch_azure_metrics():
@@ -89,11 +117,41 @@ def fetch_azure_metrics():
     except Exception as e:
         return {"error": str(e)}
 
-# Streamlit App
-st.title("🌟 Resource Monitor with Predictive Insights")
-st.markdown("This app provides **real-time monitoring**, **predictive analytics**, and **LLM usage insights** in a unified dashboard.")
+# Function to fetch GCP metrics
+def fetch_gcp_metrics():
+    try:
+        client = monitoring_v3.MetricServiceClient()
+        project_id = os.getenv("GCP_PROJECT_ID")
+        project_name = f"projects/{project_id}"
 
-# Sidebar for user input
+        interval = monitoring_v3.TimeInterval()
+        interval.end_time.seconds = int(time.time())
+        interval.start_time.seconds = interval.end_time.seconds - 3600
+
+        results = client.list_time_series(
+            request={
+                "name": project_name,
+                "filter": 'metric.type = "compute.googleapis.com/instance/cpu/utilization"',
+                "interval": interval,
+                "view": monitoring_v3.ListTimeSeriesRequest.TimeSeriesView.FULL
+            }
+        )
+
+        gcp_metrics = []
+        for result in results:
+            gcp_metrics.append({
+                "Instance": result.resource.labels["instance_id"],
+                "CPU Utilization": [point.value.double_value for point in result.points]
+            })
+
+        return gcp_metrics
+    except Exception as e:
+        return {"error": str(e)}
+
+# Streamlit App
+st.title("Resource Monitor with AWS, Azure, and GCP Metrics")
+
+# Sidebar for LLM Insights
 st.sidebar.header("LLM Insights")
 prompt = st.sidebar.text_area("Enter your LLM prompt:")
 if st.sidebar.button("Track Usage"):
@@ -102,14 +160,55 @@ if st.sidebar.button("Track Usage"):
         if "error" in result:
             st.error(result["error"])
         else:
-            st.subheader("🤖 OpenAI API Response")
+            st.subheader("OpenAI API Response")
             st.write(result["response"])
 
-            st.subheader("📊 Usage Details")
-            st.metric("Total Tokens Used", result["total_tokens"])
-            st.metric("Prompt Tokens", result["prompt_tokens"])
-            st.metric("Completion Tokens", result["completion_tokens"])
-            st.metric("Cost of Request", f"${result['cost']:.4f}")
+            st.subheader("Usage Details")
+            st.write(f"**Total Tokens Used:** {result['total_tokens']}")
+            st.write(f"**Prompt Tokens:** {result['prompt_tokens']}")
+            st.write(f"**Completion Tokens:** {result['completion_tokens']}")
+            st.write(f"**Cost of Request:** ${result['cost']:.4f}")
+
+# AWS Metrics Section
+st.sidebar.header("AWS Metrics")
+if st.sidebar.button("Fetch AWS Metrics"):
+    metrics = fetch_aws_metrics()
+    if isinstance(metrics, list):
+        st.subheader("AWS Metrics")
+        for metric in metrics:
+            st.write(f"**Instance ID:** {metric['Instance ID']}")
+            st.write(f"CPU Utilization: {metric['CPU Utilization (%)']}%")
+            st.write(f"Network In: {metric['Network In (Bytes)']} Bytes")
+            st.write("---")
+        st.success("Fetched AWS metrics successfully.")
+    else:
+        st.error(metrics["error"])
+
+# Azure Resource Metrics
+st.sidebar.header("Azure Metrics")
+if st.sidebar.button("Fetch Azure Metrics"):
+    metrics = fetch_azure_metrics()
+    if "error" in metrics:
+        st.error(metrics["error"])
+    else:
+        st.subheader("Azure Resource Metrics")
+        for key, values in metrics.items():
+            st.write(f"**{key}:** {values}")
+        st.success("Fetched Azure metrics successfully.")
+
+# GCP Metrics Section
+st.sidebar.header("GCP Metrics")
+if st.sidebar.button("Fetch GCP Metrics"):
+    metrics = fetch_gcp_metrics()
+    if isinstance(metrics, list):
+        st.subheader("GCP Metrics")
+        for metric in metrics:
+            st.write(f"**Instance ID:** {metric['Instance']}")
+            st.write(f"CPU Utilization: {metric['CPU Utilization']}")
+            st.write("---")
+        st.success("Fetched GCP metrics successfully.")
+    else:
+        st.error(metrics["error"])
 
 # Historical Logs and Trends
 st.sidebar.header("Historical LLM Logs")
@@ -117,59 +216,18 @@ if st.sidebar.button("View Historical LLM Usage"):
     try:
         df = pd.read_csv(llm_log_file, header=0)
 
-        st.subheader("🗂️ Historical LLM Usage Logs")
-        st.dataframe(df, use_container_width=True)
+        # Display DataFrame
+        st.subheader("Historical LLM Usage Logs")
+        st.dataframe(df)
 
-        st.subheader("📈 LLM Usage Trends")
+        # Visualize trends
+        st.subheader("LLM Usage Trends")
         fig, ax = plt.subplots(1, 2, figsize=(12, 6))
 
-        ax[0].plot(df["Total Tokens"], label="Total Tokens", marker="o", linestyle="--", color="blue")
+        ax[0].plot(df["Total Tokens"], label="Total Tokens", marker="o")
         ax[0].set_title("Token Usage Over Time")
         ax[0].set_xlabel("Requests")
         ax[0].set_ylabel("Tokens")
         ax[0].legend()
 
-        ax[1].plot(df["Cost"], label="Cost", marker="o", linestyle="--", color="green")
-        ax[1].set_title("Cost Over Time")
-        ax[1].set_xlabel("Requests")
-        ax[1].set_ylabel("Cost ($)")
-        ax[1].legend()
-
-        st.pyplot(fig)
-    except Exception as e:
-        st.error(f"Error loading historical data: {e}")
-
-# Predict Future Token Usage and Costs
-st.sidebar.header("Predict Future Costs")
-future_token_usage = st.sidebar.number_input("Enter future token usage:", min_value=1, step=1)
-if st.sidebar.button("Predict Cost"):
-    try:
-        df = pd.read_csv(llm_log_file, header=0)
-        df = df.dropna()  # Remove rows with missing values
-
-        df = df[df["Total Tokens"].apply(lambda x: str(x).isdigit())]
-
-        token_usage = df["Total Tokens"].astype(float).values.reshape(-1, 1)
-        costs = df["Cost"].astype(float).values
-
-        model = LinearRegression()
-        model.fit(token_usage, costs)
-
-        predicted_cost = model.predict([[future_token_usage]])[0]
-
-        st.subheader("🔮 Future Token Usage Prediction")
-        st.metric("Predicted Cost", f"${predicted_cost:.4f}")
-    except Exception as e:
-        st.error(f"Error during prediction: {e}")
-
-# Azure Resource Metrics
-st.sidebar.header("Azure Resource Metrics")
-if st.sidebar.button("Fetch Azure Metrics"):
-    metrics = fetch_azure_metrics()
-    if "error" in metrics:
-        st.error(metrics["error"])
-    else:
-        st.subheader("☁️ Azure Resource Metrics")
-        for key, values in metrics.items():
-            st.metric(key, ", ".join([str(round(v, 2)) for v in values]))
-        st.success("Fetched Azure metrics successfully.")
+        ax[1].plot(df["Cost"], label="Cost", color="red
