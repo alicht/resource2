@@ -1,26 +1,39 @@
 import pandas as pd
-from sklearn.linear_model import LinearRegression
 import matplotlib.pyplot as plt
+from sklearn.linear_model import LinearRegression
+from prediction import train_prediction_model, predict_future_value
+import streamlit as st
 
 def display_historical_logs(log_file_path):
     try:
+        # Load the historical log data
         df = pd.read_csv(log_file_path)
 
+        # Ensure required columns exist
         if not all(col in df.columns for col in ["Timestamp", "Total Tokens", "Cost"]):
-            return {"error": "The required columns 'Timestamp', 'Total Tokens', and 'Cost' are missing."}
+            st.error("The required columns 'Timestamp', 'Total Tokens', and 'Cost' are missing from the log file.")
+            return
 
-        # Attempt to parse timestamps with fallback for different formats
+        # Parse timestamps and handle formats
         def parse_timestamps(timestamp):
             try:
                 return pd.to_datetime(timestamp, format="%Y-%m-%d %H:%M:%S.%f")
             except ValueError:
                 return pd.to_datetime(timestamp, format="%Y-%m-%d %H:%M:%S")
 
-        df["Timestamp"] = df["Timestamp"].apply(parse_timestamps)
-        df = df.sort_values(by="Timestamp")
+        try:
+            df["Timestamp"] = df["Timestamp"].apply(parse_timestamps)
+            df = df.sort_values(by="Timestamp")
+        except Exception as e:
+            st.error(f"Error parsing timestamps: {e}")
+            return
+
+        # Calculate elapsed time
+        df["Elapsed Time"] = (df["Timestamp"] - df["Timestamp"].min()).dt.total_seconds()
 
         # Plot historical data
         fig, ax = plt.subplots(2, 1, figsize=(10, 8))
+
         ax[0].plot(df["Timestamp"], df["Total Tokens"], label="Total Tokens", color="blue")
         ax[0].set_title("Total Tokens Over Time")
         ax[0].set_xlabel("Time")
@@ -33,29 +46,19 @@ def display_historical_logs(log_file_path):
         ax[1].set_ylabel("Cost ($)")
         ax[1].legend()
 
+        st.pyplot(fig)
+
         # Prediction
-        df["Elapsed Time"] = (df["Timestamp"] - df["Timestamp"].min()).dt.total_seconds()
-        X = df[["Elapsed Time"]].values
-        y_tokens = df["Total Tokens"].values
-        y_cost = df["Cost"].values
+        token_model = train_prediction_model(df, "Total Tokens")
+        cost_model = train_prediction_model(df, "Cost")
 
-        token_model = LinearRegression()
-        token_model.fit(X, y_tokens)
+        current_elapsed_time = df["Elapsed Time"].max()
+        predicted_tokens = predict_future_value(token_model, current_elapsed_time, days_into_future=1)
+        predicted_cost = predict_future_value(cost_model, current_elapsed_time, days_into_future=1)
 
-        cost_model = LinearRegression()
-        cost_model.fit(X, y_cost)
+        st.write("## Predictions")
+        st.write(f"Predicted Total Tokens for Tomorrow: {predicted_tokens:.2f}")
+        st.write(f"Predicted Cost for Tomorrow: ${predicted_cost:.4f}")
 
-        future_time = [[X[-1][0] + 86400]]  # 1 day into the future
-        predicted_tokens = token_model.predict(future_time)[0]
-        predicted_cost = cost_model.predict(future_time)[0]
-
-        return {
-            "dataframe": df,
-            "plot": fig,
-            "predictions": {
-                "tokens": predicted_tokens,
-                "cost": predicted_cost
-            }
-        }
     except Exception as e:
-        return {"error": str(e)}
+        st.error(f"Error loading historical data: {e}")
