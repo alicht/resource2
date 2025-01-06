@@ -1,9 +1,11 @@
-Timestamp,Total Tokens,Prompt Tokens,Cost
-2024-12-24 09:38:31.687345,28,18,5.6e-05
-2024-12-24 10:13:48,110,19,0.00022
-2024-12-24 10:15:51,28,18,5.6e-05
-2024-12-24 10:24:59,29,19,5.800000000000001e-05
-2024-12-24 10:27:56,28,18,5.6e-05
-2024-12-24 10:31:21,46,18,9.2e-05
-2024-12-24 10:33:26,29,19,5.800000000000001e-05
-2024-12-24 23:35:46,29,19,5.800000000000001e-05
+Timestamp,Model,Total Tokens,Cost,Prompt
+2024-12-25 12:00:00,gpt-4,150,0.045,"Generate a summary of..."
+2024-12-25 12:05:00,gpt-3.5-turbo,120,0.003,"Explain quantum computing..."
+2024-12-25 12:10:00,gpt-4,200,0.060,"Analyze the sentiment of this text..."
+2024-12-25 12:15:00,gpt-3.5-turbo,80,0.002,"What is the capital of France?"
+2024-12-25 12:20:00,gpt-4,300,0.090,"Generate a detailed report on market trends."
+2024-12-25 12:25:00,gpt-3.5-turbo,100,0.003,"Summarize this news article."
+2024-12-25 12:30:00,gpt-4,250,0.075,"Write a Python script to calculate Fibonacci numbers."
+2024-12-25 12:35:00,gpt-3.5-turbo,60,0.002,"Define the laws of thermodynamics."
+
+

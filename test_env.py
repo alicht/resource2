@@ -1,11 +1,11 @@
-from dotenv import load_dotenv
+# test_env.py
 import os
+from dotenv import load_dotenv
 
-# Reload the .env file
+# Load the .env file
 load_dotenv()
 
-# Debug output
-print(f"Current directory: {os.getcwd()}")
-print(f"Environment variables: {os.environ}")
-project_id = os.getenv("GCP_PROJECT_ID")
-print(f"GCP_PROJECT_ID: {project_id}")
+# Print environment variables
+print("AWS_ACCESS_KEY_ID:", os.getenv("AWS_ACCESS_KEY_ID"))
+print("AWS_SECRET_ACCESS_KEY:", os.getenv("AWS_SECRET_ACCESS_KEY"))
+print("AWS_REGION:", os.getenv("AWS_REGION"))
